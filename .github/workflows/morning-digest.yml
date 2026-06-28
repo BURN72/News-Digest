@@ -1,0 +1,45 @@
+name: 📰 News Digest (6h & 21h)
+
+on:
+  # 5h UTC  = 6h Cameroun  → digest matinal
+  # 20h UTC = 21h Cameroun → digest du soir
+  schedule:
+    - cron: "0 5  * * *"
+    - cron: "0 20 * * *"
+
+  # Permet de lancer manuellement depuis l'onglet Actions
+  workflow_dispatch:
+
+jobs:
+  send-digest:
+    name: Scrape & Send Digest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout du code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 📦 Installation des dépendances
+        run: pip install -r requirements.txt
+
+      - name: 🚀 Exécution du digest
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python src/digest.py
+
+      - name: ✅ Confirmation
+        if: success()
+        run: echo "Digest envoyé avec succès à $(date '+%H:%M UTC')"
+
+      - name: ❌ Notification d'échec
+        if: failure()
+        run: echo "ERREUR — Le digest n'a pas pu être envoyé"
