@@ -11,101 +11,91 @@ import google.generativeai as genai
 from datetime import datetime, timezone, timedelta
 
 # ─────────────────────────────────────────────
-# SOURCES RSS — SÉLECTION COMPLÈTE & QUALIFIÉE
+# SOURCES RSS
 # ─────────────────────────────────────────────
 RSS_SOURCES = {
 
-    # ── CAMEROUN ─────────────────────────────
     "🇨🇲 Cameroun": [
-        "https://www.cameroon-tribune.cm/rss.xml",          # Journal officiel
-        "https://actucameroun.com/feed/",                   # Actu Cameroun (très actif)
-        "https://www.crtv.cm/feed/",                        # Radio-TV nationale
-        "https://www.jeuneafrique.com/pays/cameroun/feed/", # JA focus Cameroun
-        "https://www.lemonde.fr/cameroun/rss_full.xml",     # Le Monde / Cameroun
-        "https://www.rfi.fr/fr/afrique/rss",                # RFI Afrique (inclut CM)
+        "https://www.cameroon-tribune.cm/rss.xml",
+        "https://actucameroun.com/feed/",
+        "https://www.crtv.cm/feed/",
+        "https://www.jeuneafrique.com/pays/cameroun/feed/",
+        "https://www.lemonde.fr/cameroun/rss_full.xml",
+        "https://www.rfi.fr/fr/afrique/rss",
     ],
 
-    # ── AFRIQUE ──────────────────────────────
     "🌍 Afrique": [
-        "https://www.jeuneafrique.com/feed/",               # Référence presse africaine
-        "https://www.bbc.com/afrique/index.xml",            # BBC Afrique FR
-        "https://www.rfi.fr/fr/rss/afrique.xml",            # RFI Afrique
-        "https://afrique.le360.ma/feed",                    # Le360 Afrique
-        "https://www.africanews.com/feed/",                 # Africanews EN
-        "https://www.voaafrique.com/api/zv-etr_iytpqo",    # VOA Afrique FR
+        "https://www.jeuneafrique.com/feed/",
+        "https://www.bbc.com/afrique/index.xml",
+        "https://www.rfi.fr/fr/rss/afrique.xml",
+        "https://afrique.le360.ma/feed",
+        "https://www.africanews.com/feed/",
+        "https://www.voaafrique.com/api/zv-etr_iytpqo",
     ],
 
-    # ── MONDE ────────────────────────────────
     "🌐 Monde": [
-        "https://www.lemonde.fr/rss/une.xml",               # Le Monde — Une
-        "https://www.rfi.fr/fr/rss/monde.xml",              # RFI Monde
-        "https://feeds.bbci.co.uk/news/world/rss.xml",      # BBC World EN
-        "https://www.france24.com/fr/rss",                  # France 24 FR
-        "https://www.reuters.com/tools/rss",                # Reuters monde
-        "https://www.aljazeera.com/xml/rss/all.xml",        # Al Jazeera EN
+        "https://www.lemonde.fr/rss/une.xml",
+        "https://www.rfi.fr/fr/rss/monde.xml",
+        "https://feeds.bbci.co.uk/news/world/rss.xml",
+        "https://www.france24.com/fr/rss",
+        "https://www.reuters.com/tools/rss",
+        "https://www.aljazeera.com/xml/rss/all.xml",
     ],
 
-    # ── TECH & IA ────────────────────────────
-    "💻 Tech / IA": [
-        # Veille généraliste EN
-        "https://techcrunch.com/feed/",                     # TechCrunch
-        "https://www.theverge.com/rss/index.xml",           # The Verge
-        "https://arstechnica.com/feed/",                    # Ars Technica
-        "https://www.wired.com/feed/rss",                   # Wired
-        # IA spécialisé
-        "https://openai.com/blog/rss/",                     # OpenAI Blog
-        "https://www.anthropic.com/rss",                    # Anthropic
-        "https://blog.google/technology/ai/rss/",           # Google AI
-        # Dev & Open Source
-        "https://github.blog/feed/",                        # GitHub Blog
-        "https://stackoverflow.blog/feed/",                 # Stack Overflow
-        # FR
-        "https://www.presse-citron.net/feed/",              # Presse-Citron FR
-        "https://korben.info/feed",                         # Korben (hacking/dev FR)
-        "https://www.journaldugeek.com/feed/",              # Journal du Geek FR
+    "💻 Tech & Dev": [
+        "https://techcrunch.com/feed/",
+        "https://www.theverge.com/rss/index.xml",
+        "https://arstechnica.com/feed/",
+        "https://www.wired.com/feed/rss",
+        "https://github.blog/feed/",
+        "https://stackoverflow.blog/feed/",
+        "https://www.presse-citron.net/feed/",
+        "https://korben.info/feed",
+        "https://www.journaldugeek.com/feed/",
     ],
 
-    # ── FOOTBALL — COMPÉTITIONS INTERNATIONALES ──
-    "⚽ Coupe du Monde & CAN": [
-        "https://www.bbc.com/sport/football/rss.xml",               # BBC Sport
-        "https://www.theguardian.com/football/world-cup-2026/rss",  # Guardian WC2026
-        "https://www.goal.com/feeds/fr/news",                       # Goal.com FR
-        "https://www.lequipe.fr/rss/actu_rss_Football.xml",         # L'Équipe
-        "https://www.cafonline.com/news/feed/",                     # CAF (CAN officiel)
-        "https://www.bbc.com/sport/africa/rss.xml",                 # BBC Sport Afrique
+    "🤖 IA & Modèles": [
+        "https://openai.com/blog/rss/",
+        "https://www.anthropic.com/rss",
+        "https://blog.google/technology/ai/rss/",
+        "https://huggingface.co/blog/feed.xml",
+        "https://mistral.ai/news/feed/",
+        "https://stability.ai/news/rss.xml",
+        "https://techcrunch.com/category/artificial-intelligence/feed/",
+        "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml",
+        "https://feeds.feedburner.com/blogspot/gJZg",  # Google Research
     ],
 
-    # ── FOOTBALL — LIGUES EUROPÉENNES ────────
+    "⚽ Foot International": [
+        "https://www.bbc.com/sport/football/rss.xml",
+        "https://www.theguardian.com/football/world-cup-2026/rss",
+        "https://www.goal.com/feeds/fr/news",
+        "https://www.lequipe.fr/rss/actu_rss_Football.xml",
+        "https://www.cafonline.com/news/feed/",
+        "https://www.bbc.com/sport/africa/rss.xml",
+    ],
+
     "🏆 Ligues Européennes": [
-        # UEFA / Champions League
-        "https://www.uefa.com/rss/",                                # UEFA officiel
-        "https://www.theguardian.com/football/championsleague/rss", # Guardian UCL
-        # Premier League
-        "https://www.premierleague.com/news/rss",                   # PL officiel
-        "https://www.theguardian.com/football/premierleague/rss",   # Guardian PL
-        # La Liga
-        "https://www.marca.com/rss/futbol/primera-division.xml",    # Marca (ESP)
-        "https://www.sport.es/es/rss/",                             # Sport.es (ESP)
-        # Bundesliga
-        "https://www.bundesliga.com/api/rss/news",                  # Bundesliga officiel
-        "https://www.kicker.de/news/fussball/bundesliga/rss",       # Kicker (GER)
-        # Serie A
-        "https://www.goal.com/feeds/it/news",                       # Goal.com IT
-        "https://www.gazzetta.it/rss/home.xml",                     # Gazzetta dello Sport
+        "https://www.uefa.com/rss/",
+        "https://www.theguardian.com/football/championsleague/rss",
+        "https://www.premierleague.com/news/rss",
+        "https://www.theguardian.com/football/premierleague/rss",
+        "https://www.marca.com/rss/futbol/primera-division.xml",
+        "https://www.bundesliga.com/api/rss/news",
+        "https://www.kicker.de/news/fussball/bundesliga/rss",
+        "https://www.gazzetta.it/rss/home.xml",
     ],
 
-    # ── FOOTBALL — CHAMPIONNAT CAMEROUNAIS ───
-    "🦁 Football Camerounais": [
-        "https://www.camfoot.com/feed/",                    # Camfoot — référence
-        "https://www.rfi.fr/fr/rss/afrique-foot.xml",       # RFI Afrique Foot
-        "https://actucameroun.com/category/sport/feed/",    # Actu CM Sport
-        "https://www.jeuneafrique.com/sport/football/feed/",# JA Football Afrique
+    "🦁 Foot Camerounais": [
+        "https://www.camfoot.com/feed/",
+        "https://www.rfi.fr/fr/rss/afrique-foot.xml",
+        "https://actucameroun.com/category/sport/feed/",
+        "https://www.jeuneafrique.com/sport/football/feed/",
     ],
 }
 
-# Fuseau horaire Cameroun (UTC+1)
 TZ_CAMEROON = timezone(timedelta(hours=1))
-MAX_ARTICLES_PER_CATEGORY = 5
+MAX_ARTICLES_PER_CATEGORY = 15  # On en prend plus pour que Gemini ait du choix
 HOURS_LOOKBACK = 24
 
 
@@ -140,7 +130,7 @@ def fetch_articles(sources: dict) -> dict:
         for url in urls:
             try:
                 feed = feedparser.parse(url)
-                for entry in feed.entries[:10]:
+                for entry in feed.entries[:20]:
                     published = None
                     if hasattr(entry, "published_parsed") and entry.published_parsed:
                         published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
@@ -148,17 +138,20 @@ def fetch_articles(sources: dict) -> dict:
                     if published and published < cutoff:
                         continue
 
+                    # Récupérer le lien direct de l'article
+                    link = entry.get("link", "")
+
                     articles.append({
                         "title": entry.get("title", "Sans titre"),
-                        "summary": entry.get("summary", entry.get("description", ""))[:300],
-                        "link": entry.get("link", ""),
+                        "summary": entry.get("summary", entry.get("description", ""))[:400],
+                        "link": link,  # lien direct article
                         "source": feed.feed.get("title", url),
                         "published": published.strftime("%H:%M") if published else "??:??",
                     })
             except Exception as e:
                 print(f"⚠️  Erreur sur {url}: {e}")
 
-        # Dédoublonner par titre et limiter
+        # Dédoublonner par titre
         seen = set()
         unique = []
         for a in articles:
@@ -189,61 +182,106 @@ def summarize_with_gemini(articles_by_category: dict) -> str:
             continue
         content += f"\n\n## {category}\n"
         for a in articles:
-            content += f"- [{a['source']}] {a['title']} ({a['published']})\n"
+            content += f"- TITRE: {a['title']}\n"
+            content += f"  SOURCE: {a['source']}\n"
+            content += f"  LIEN: {a['link']}\n"
+            content += f"  HEURE: {a['published']}\n"
             if a["summary"]:
                 clean = re.sub(r"<[^>]+>", "", a["summary"])
-                content += f"  → {clean[:200]}\n"
+                content += f"  RESUME: {clean[:300]}\n"
 
-    prompt = f"""Tu es un assistant d'actualité pour un étudiant camerounais en informatique.
-Voici les titres des dernières 24h récupérés depuis des flux RSS :
+    prompt = f"""Tu es un assistant d'actualité expert pour un étudiant camerounais passionné d'informatique et de football.
+
+Voici les articles des dernières 24h :
 
 {content}
 
-Génère un digest {ctx['label']} en français, structuré, concis et engageant.
+Génère un digest {ctx['label']} en français, riche et bien structuré.
 
-Format attendu (Markdown Telegram — *gras*, _italique_, pas de ##) :
+RÈGLES STRICTES :
+1. Exactement *10 bullets* par catégorie (si moins d'articles disponibles, utilise-en le maximum)
+2. Chaque bullet = 2 lignes : une ligne de contexte + les faits essentiels
+3. Chaque bullet se termine par le lien DIRECT de l'article (pas la homepage) entre parenthèses
+4. Format Markdown Telegram uniquement : *gras*, _italique_, [texte](url) — PAS de ##
+5. Les liens doivent être les URL complètes des articles individuels
+
+FORMAT EXACT À SUIVRE :
 
 {ctx['emoji']} *Digest {ctx['label']} du {now_cm}*
 _{ctx['intro']}_
 
-Pour chaque catégorie qui a des articles :
-- Titre de section en gras (ex: *🇨🇲 Cameroun*)
-- 3 à 5 bullets avec l'essentiel en 1-2 lignes max
-- Lien cliquable à la fin de chaque bullet si possible
+*🇨🇲 Cameroun*
+• _Politique_ : [description 2 lignes avec contexte] ([Lire](url_article))
+• ...
 
-Regroupe les sections foot ainsi :
-- *⚽ Foot International* (Mondial + CAN + grandes compétitions)
-- *🏆 Ligues Européennes* (PL, Liga, Bundesliga, Serie A, UCL)
-- *🦁 Foot Camerounais* (championnat local + Lions Indomptables)
+*🌍 Afrique*
+• ...
 
-Termine toujours par *💻 Veille Tech & IA* avec les 3-5 infos les plus importantes pour un dev.
-Ton dynamique et informatif. Maximum 45 lignes au total."""
+*🌐 Monde*
+• ...
 
-    response = model.generate_content(prompt)
+*💻 Tech & Dev*
+• ...
+
+*🤖 IA & Modèles* ← Section dédiée aux modèles IA gratuits, nouvelles offres, mises à jour, innovations
+• _Nouveau modèle_ : [description] ([Lire](url))
+• _Offre gratuite_ : [description] ([Lire](url))
+• ...
+
+*⚽ Foot International* (Mondial 2026 + CAN + compétitions africaines)
+• ...
+
+*🏆 Ligues Européennes* (PL, Liga, Bundesliga, Serie A, UCL)
+• ...
+
+*🦁 Foot Camerounais*
+• ...
+
+Ton : informatif, dynamique, avec une touche de contexte pour chaque info. 
+Priorité absolue aux liens directs des articles individuels."""
+
+    response = model.generate_content(
+        prompt,
+        generation_config={"max_output_tokens": 4000}
+    )
     return response.text
 
 
 # ─────────────────────────────────────────────
-# ENVOI TELEGRAM
+# ENVOI TELEGRAM (multi-messages si trop long)
 # ─────────────────────────────────────────────
 def send_telegram(text: str, bot_token: str, chat_id: str) -> bool:
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+
+    # Découper proprement par section pour ne pas couper en plein milieu
+    chunks = []
+    current = ""
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > 4000:
+            chunks.append(current)
+            current = line + "\n"
+        else:
+            current += line + "\n"
+    if current:
+        chunks.append(current)
 
     for i, chunk in enumerate(chunks):
         payload = {
             "chat_id": chat_id,
             "text": chunk,
             "parse_mode": "Markdown",
-            "disable_web_page_preview": False,
+            "disable_web_page_preview": True,  # évite les previews qui alourdissent
         }
         resp = requests.post(url, json=payload, timeout=15)
         if not resp.ok:
             print(f"❌ Erreur Telegram (chunk {i+1}): {resp.text}")
+            # Retry sans Markdown
             payload["parse_mode"] = ""
             resp = requests.post(url, json=payload, timeout=15)
             if not resp.ok:
                 return False
+        print(f"  📨 Chunk {i+1}/{len(chunks)} envoyé")
+
     return True
 
 
