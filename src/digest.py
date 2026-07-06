@@ -1,20 +1,32 @@
 """
-News Digest Bot — 6h & 21h
-Scrape les flux RSS → résumé via Gemini 3.5 Flash (gratuit) → envoi Telegram
+News Digest Bot — 6h & 21h WAT
+- Heure forcée en Africa/Douala (WAT = UTC+1)
+- Articles depuis la dernière exécution (fichier timestamp)
+- Format HTML Telegram (liens fiables)
+- Maximum d'articles par catégorie
 """
 
 import os
 import re
+import json
 import feedparser
 import requests
 import google.generativeai as genai
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 # ─────────────────────────────────────────────
-# SOURCES RSS
+# FUSEAU HORAIRE — WAT (Africa/Douala = UTC+1)
+# ─────────────────────────────────────────────
+TZ_WAT = ZoneInfo("Africa/Douala")
+
+# Fichier de suivi de la dernière exécution
+LAST_RUN_FILE = "/tmp/last_run_timestamp.json"
+
+# ─────────────────────────────────────────────
+# SOURCES RSS — 51 SOURCES
 # ─────────────────────────────────────────────
 RSS_SOURCES = {
-
     "🇨🇲 Cameroun": [
         "https://www.cameroon-tribune.cm/rss.xml",
         "https://actucameroun.com/feed/",
@@ -23,7 +35,6 @@ RSS_SOURCES = {
         "https://www.lemonde.fr/cameroun/rss_full.xml",
         "https://www.rfi.fr/fr/afrique/rss",
     ],
-
     "🌍 Afrique": [
         "https://www.jeuneafrique.com/feed/",
         "https://www.bbc.com/afrique/index.xml",
@@ -32,7 +43,6 @@ RSS_SOURCES = {
         "https://www.africanews.com/feed/",
         "https://www.voaafrique.com/api/zv-etr_iytpqo",
     ],
-
     "🌐 Monde": [
         "https://www.lemonde.fr/rss/une.xml",
         "https://www.rfi.fr/fr/rss/monde.xml",
@@ -41,7 +51,6 @@ RSS_SOURCES = {
         "https://www.reuters.com/tools/rss",
         "https://www.aljazeera.com/xml/rss/all.xml",
     ],
-
     "💻 Tech & Dev": [
         "https://techcrunch.com/feed/",
         "https://www.theverge.com/rss/index.xml",
@@ -53,19 +62,16 @@ RSS_SOURCES = {
         "https://korben.info/feed",
         "https://www.journaldugeek.com/feed/",
     ],
-
     "🤖 IA & Modèles": [
         "https://openai.com/blog/rss/",
         "https://www.anthropic.com/rss",
         "https://blog.google/technology/ai/rss/",
         "https://huggingface.co/blog/feed.xml",
         "https://mistral.ai/news/feed/",
-        "https://stability.ai/news/rss.xml",
         "https://techcrunch.com/category/artificial-intelligence/feed/",
         "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml",
-        "https://feeds.feedburner.com/blogspot/gJZg",  # Google Research
+        "https://feeds.feedburner.com/blogspot/gJZg",
     ],
-
     "⚽ Foot International": [
         "https://www.bbc.com/sport/football/rss.xml",
         "https://www.theguardian.com/football/world-cup-2026/rss",
@@ -74,7 +80,6 @@ RSS_SOURCES = {
         "https://www.cafonline.com/news/feed/",
         "https://www.bbc.com/sport/africa/rss.xml",
     ],
-
     "🏆 Ligues Européennes": [
         "https://www.uefa.com/rss/",
         "https://www.theguardian.com/football/championsleague/rss",
@@ -85,7 +90,6 @@ RSS_SOURCES = {
         "https://www.kicker.de/news/fussball/bundesliga/rss",
         "https://www.gazzetta.it/rss/home.xml",
     ],
-
     "🦁 Foot Camerounais": [
         "https://www.camfoot.com/feed/",
         "https://www.rfi.fr/fr/rss/afrique-foot.xml",
@@ -94,193 +98,246 @@ RSS_SOURCES = {
     ],
 }
 
-TZ_CAMEROON = timezone(timedelta(hours=1))
-MAX_ARTICLES_PER_CATEGORY = 15  # On en prend plus pour que Gemini ait du choix
-HOURS_LOOKBACK = 24
+
+# ─────────────────────────────────────────────
+# GESTION DU TIMESTAMP DE DERNIÈRE EXÉCUTION
+# ─────────────────────────────────────────────
+def get_last_run_time() -> datetime:
+    """Retourne l'heure de la dernière exécution. Par défaut : 12h en arrière."""
+    try:
+        if os.path.exists(LAST_RUN_FILE):
+            with open(LAST_RUN_FILE) as f:
+                data = json.load(f)
+                ts = datetime.fromisoformat(data["last_run"])
+                print(f"📅 Dernière exécution : {ts.strftime('%d/%m/%Y %H:%M WAT')}")
+                return ts
+    except Exception:
+        pass
+    # Première exécution ou fichier absent → 12h en arrière
+    default = datetime.now(timezone.utc) - timedelta(hours=12)
+    print(f"📅 Première exécution — récupération des 12 dernières heures")
+    return default
+
+
+def save_last_run_time():
+    """Sauvegarde l'heure courante comme dernière exécution."""
+    try:
+        with open(LAST_RUN_FILE, "w") as f:
+            json.dump({"last_run": datetime.now(timezone.utc).isoformat()}, f)
+    except Exception as e:
+        print(f"⚠️  Impossible de sauvegarder le timestamp : {e}")
 
 
 # ─────────────────────────────────────────────
-# DÉTECTION MATINAL / SOIR
+# DÉTECTION MATINAL / SOIR (heure WAT réelle)
 # ─────────────────────────────────────────────
 def get_digest_context() -> dict:
-    hour = datetime.now(TZ_CAMEROON).hour
+    now_wat = datetime.now(TZ_WAT)
+    hour = now_wat.hour
+    print(f"🕐 Heure WAT actuelle : {now_wat.strftime('%H:%M')} (UTC+1)")
+
     if 4 <= hour < 14:
         return {
             "emoji": "🌅",
             "label": "matinal",
             "intro": "Bonne matinée ! Voici l'essentiel de l'actu pour bien démarrer ta journée.",
+            "now_str": now_wat.strftime("%A %d %B %Y — %H:%M WAT"),
         }
     else:
         return {
             "emoji": "🌙",
             "label": "du soir",
             "intro": "Bonne soirée ! Voici ce qu'il s'est passé aujourd'hui dans le monde.",
+            "now_str": now_wat.strftime("%A %d %B %Y — %H:%M WAT"),
         }
 
 
 # ─────────────────────────────────────────────
-# SCRAPING RSS
+# SCRAPING RSS — ARTICLES DEPUIS DERNIÈRE EXEC
 # ─────────────────────────────────────────────
-def fetch_articles(sources: dict) -> dict:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=HOURS_LOOKBACK)
-    results = {}
+def fetch_articles(sources: dict, since: datetime) -> dict:
+    """Récupère tous les articles publiés depuis `since`."""
+    # Assurer que since est timezone-aware
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
 
+    results = {}
     for category, urls in sources.items():
         articles = []
         for url in urls:
             try:
                 feed = feedparser.parse(url)
-                for entry in feed.entries[:20]:
+                for entry in feed.entries[:30]:  # jusqu'à 30 par source
                     published = None
                     if hasattr(entry, "published_parsed") and entry.published_parsed:
-                        published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                        try:
+                            published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                        except Exception:
+                            pass
 
-                    if published and published < cutoff:
+                    # Inclure si publié après la dernière exécution
+                    # Si pas de date, on inclut quand même (mieux trop que trop peu)
+                    if published and published <= since:
                         continue
 
-                    # Récupérer le lien direct de l'article
-                    link = entry.get("link", "")
+                    # Nettoyage du résumé
+                    raw_summary = entry.get("summary", entry.get("description", ""))
+                    clean_summary = re.sub(r"<[^>]+>", "", raw_summary)[:500]
 
                     articles.append({
-                        "title": entry.get("title", "Sans titre"),
-                        "summary": entry.get("summary", entry.get("description", ""))[:400],
-                        "link": link,  # lien direct article
+                        "title": entry.get("title", "Sans titre").strip(),
+                        "summary": clean_summary.strip(),
+                        "link": entry.get("link", ""),
                         "source": feed.feed.get("title", url),
-                        "published": published.strftime("%H:%M") if published else "??:??",
+                        "published": published.astimezone(TZ_WAT).strftime("%H:%M WAT") if published else "—",
                     })
             except Exception as e:
                 print(f"⚠️  Erreur sur {url}: {e}")
 
-        # Dédoublonner par titre
+        # Dédoublonner
         seen = set()
         unique = []
         for a in articles:
-            key = a["title"].lower()[:60]
+            key = a["title"].lower()[:70]
             if key not in seen:
                 seen.add(key)
                 unique.append(a)
 
-        results[category] = unique[:MAX_ARTICLES_PER_CATEGORY]
-        print(f"  {category}: {len(results[category])} articles récupérés")
+        results[category] = unique
+        count = len(unique)
+        print(f"  {category}: {count} nouveaux articles")
 
     return results
 
 
 # ─────────────────────────────────────────────
-# RÉSUMÉ VIA GEMINI 3.5 FLASH
+# RÉSUMÉ GEMINI — FORMAT HTML TELEGRAM STRICT
 # ─────────────────────────────────────────────
-def summarize_with_gemini(articles_by_category: dict) -> str:
+def summarize_with_gemini(articles_by_category: dict, ctx: dict) -> str:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
     model = genai.GenerativeModel("gemini-3.5-flash")
 
-    ctx = get_digest_context()
-    now_cm = datetime.now(TZ_CAMEROON).strftime("%A %d %B %Y — %H:%M")
-
+    # Construire le contenu brut
     content = ""
+    total = 0
     for category, articles in articles_by_category.items():
         if not articles:
             continue
-        content += f"\n\n## {category}\n"
+        content += f"\n\n=== {category} ({len(articles)} articles) ===\n"
         for a in articles:
-            content += f"- TITRE: {a['title']}\n"
-            content += f"  SOURCE: {a['source']}\n"
-            content += f"  LIEN: {a['link']}\n"
-            content += f"  HEURE: {a['published']}\n"
+            total += 1
+            content += f"TITRE: {a['title']}\n"
+            content += f"SOURCE: {a['source']}\n"
+            content += f"LIEN: {a['link']}\n"
+            content += f"HEURE: {a['published']}\n"
             if a["summary"]:
-                clean = re.sub(r"<[^>]+>", "", a["summary"])
-                content += f"  RESUME: {clean[:300]}\n"
+                content += f"RESUME: {a['summary'][:300]}\n"
+            content += "---\n"
+
+    print(f"📝 Total articles transmis à Gemini : {total}")
 
     prompt = f"""Tu es un assistant d'actualité expert pour un étudiant camerounais passionné d'informatique et de football.
 
-Voici les articles des dernières 24h :
+Voici TOUS les nouveaux articles depuis la dernière consultation :
 
 {content}
 
-Génère un digest {ctx['label']} en français, riche et bien structuré.
+MISSION : Génère un digest {ctx['label']} complet, riche et bien formaté en HTML Telegram.
 
-RÈGLES STRICTES :
-1. Exactement *10 bullets* par catégorie (si moins d'articles disponibles, utilise-en le maximum)
-2. Chaque bullet = 2 lignes : une ligne de contexte + les faits essentiels
-3. Chaque bullet se termine par le lien DIRECT de l'article (pas la homepage) entre parenthèses
-4. Format Markdown Telegram uniquement : *gras*, _italique_, [texte](url) — PAS de ##
-5. Les liens doivent être les URL complètes des articles individuels
+═══ RÈGLES DE FORMAT HTML TELEGRAM STRICTES ═══
+✅ Balises autorisées UNIQUEMENT :
+   - <b>texte</b> → gras
+   - <i>texte</i> → italique  
+   - <a href="URL_COMPLETE">texte</a> → lien cliquable
+   - &#8226; → bullet point (•)
+   - Sauts de ligne normaux
 
-FORMAT EXACT À SUIVRE :
+❌ INTERDIT ABSOLUMENT :
+   - Astérisques * ou ** (Markdown)
+   - Crochets [texte](url) (Markdown)
+   - Underscores _ pour italique
+   - Tout autre Markdown
 
-{ctx['emoji']} *Digest {ctx['label']} du {now_cm}*
-_{ctx['intro']}_
+═══ STRUCTURE DU DIGEST ═══
 
-*🇨🇲 Cameroun*
-• _Politique_ : [description 2 lignes avec contexte] ([Lire](url_article))
-• ...
+{ctx['emoji']} <b>Digest {ctx['label']} — {ctx['now_str']}</b>
+<i>{ctx['intro']}</i>
 
-*🌍 Afrique*
-• ...
+Pour CHAQUE catégorie qui a des articles :
 
-*🌐 Monde*
-• ...
+[EMOJI] <b>[Nom catégorie]</b>
+&#8226; <b>[Tag thématique]</b> : [2 lignes de contexte et faits clés]. <a href="URL_DIRECTE_ARTICLE">Lire</a>
+&#8226; ...
+(inclure LE MAXIMUM d'articles disponibles pour cette catégorie)
 
-*💻 Tech & Dev*
-• ...
+═══ SECTIONS OBLIGATOIRES (si articles disponibles) ═══
+🇨🇲 <b>Cameroun</b>
+🌍 <b>Afrique</b>
+🌐 <b>Monde</b>
+💻 <b>Tech &amp; Dev</b>
+🤖 <b>IA &amp; Modèles</b> — mentionne les modèles gratuits, nouvelles offres, mises à jour
+⚽ <b>Foot International</b> — Mondial 2026, CAN, compétitions africaines
+🏆 <b>Ligues Européennes</b> — PL, Liga, Bundesliga, Serie A, UCL
+🦁 <b>Foot Camerounais</b> — Lions Indomptables, championnat local
 
-*🤖 IA & Modèles* ← Section dédiée aux modèles IA gratuits, nouvelles offres, mises à jour, innovations
-• _Nouveau modèle_ : [description] ([Lire](url))
-• _Offre gratuite_ : [description] ([Lire](url))
-• ...
-
-*⚽ Foot International* (Mondial 2026 + CAN + compétitions africaines)
-• ...
-
-*🏆 Ligues Européennes* (PL, Liga, Bundesliga, Serie A, UCL)
-• ...
-
-*🦁 Foot Camerounais*
-• ...
-
-Ton : informatif, dynamique, avec une touche de contexte pour chaque info. 
-Priorité absolue aux liens directs des articles individuels."""
+═══ RÈGLES CONTENU ═══
+- Inclure TOUS les articles disponibles, pas seulement 3 ou 5
+- Chaque bullet = 1-2 phrases avec contexte + lien direct de l'article
+- Les URLs dans href doivent être les URLs COMPLÈTES des articles (pas des homepages)
+- Si l'URL contient des caractères spéciaux, les garder tels quels
+- Ton dynamique, informatif, avec contexte pour chaque info"""
 
     response = model.generate_content(
         prompt,
-        generation_config={"max_output_tokens": 4000}
+        generation_config={"max_output_tokens": 8000}
     )
     return response.text
 
 
 # ─────────────────────────────────────────────
-# ENVOI TELEGRAM (multi-messages si trop long)
+# ENVOI TELEGRAM — MODE HTML
 # ─────────────────────────────────────────────
 def send_telegram(text: str, bot_token: str, chat_id: str) -> bool:
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
-    # Découper proprement par section pour ne pas couper en plein milieu
+    # Découper proprement entre lignes (jamais en plein milieu d'une balise)
+    lines = text.split("\n")
     chunks = []
     current = ""
-    for line in text.split("\n"):
-        if len(current) + len(line) + 1 > 4000:
-            chunks.append(current)
+
+    for line in lines:
+        if len(current) + len(line) + 1 > 3800:
+            if current.strip():
+                chunks.append(current.strip())
             current = line + "\n"
         else:
             current += line + "\n"
-    if current:
-        chunks.append(current)
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    print(f"📨 Envoi en {len(chunks)} message(s)...")
 
     for i, chunk in enumerate(chunks):
         payload = {
             "chat_id": chat_id,
             "text": chunk,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True,  # évite les previews qui alourdissent
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
         }
-        resp = requests.post(url, json=payload, timeout=15)
-        if not resp.ok:
-            print(f"❌ Erreur Telegram (chunk {i+1}): {resp.text}")
-            # Retry sans Markdown
+        resp = requests.post(api_url, json=payload, timeout=15)
+
+        if resp.ok:
+            print(f"  ✅ Message {i+1}/{len(chunks)} envoyé")
+        else:
+            print(f"  ❌ Erreur message {i+1}: {resp.text}")
+            # Retry sans formatage si HTML pose problème
             payload["parse_mode"] = ""
-            resp = requests.post(url, json=payload, timeout=15)
-            if not resp.ok:
+            resp2 = requests.post(api_url, json=payload, timeout=15)
+            if not resp2.ok:
+                print(f"  ❌ Retry échoué : {resp2.text}")
                 return False
-        print(f"  📨 Chunk {i+1}/{len(chunks)} envoyé")
+            print(f"  ✅ Message {i+1} envoyé sans formatage")
 
     return True
 
@@ -290,34 +347,46 @@ def send_telegram(text: str, bot_token: str, chat_id: str) -> bool:
 # ─────────────────────────────────────────────
 def main():
     ctx = get_digest_context()
-    print(f"🚀 Démarrage du digest {ctx['label']}...")
+    print(f"\n🚀 Démarrage du digest {ctx['label']} — {ctx['now_str']}")
 
+    # Vérification des variables d'environnement
     required_env = ["GEMINI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
     missing = [v for v in required_env if not os.environ.get(v)]
     if missing:
         raise EnvironmentError(f"Variables manquantes : {', '.join(missing)}")
 
-    print("\n📡 Récupération des articles RSS...")
-    articles = fetch_articles(RSS_SOURCES)
+    # Récupérer le timestamp de la dernière exécution
+    last_run = get_last_run_time()
+
+    # Scraping
+    print(f"\n📡 Récupération des articles depuis {last_run.strftime('%d/%m %H:%M UTC')}...")
+    articles = fetch_articles(RSS_SOURCES, since=last_run)
     total = sum(len(v) for v in articles.values())
-    print(f"✅ {total} articles récupérés au total")
+    print(f"\n✅ {total} nouveaux articles récupérés au total")
 
     if total == 0:
-        fallback = f"{ctx['emoji']} *Digest {ctx['label']}*\n\n_Aucun article récent trouvé. Vérifiez les flux RSS._"
+        fallback = (
+            f"{ctx['emoji']} <b>Digest {ctx['label']} — {ctx['now_str']}</b>\n\n"
+            f"<i>Aucun nouvel article depuis la dernière consultation. Tout est à jour !</i>"
+        )
         send_telegram(fallback, os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"])
+        save_last_run_time()
         return
 
+    # Résumé Gemini
     print("\n🤖 Génération du résumé avec Gemini 3.5 Flash...")
-    digest = summarize_with_gemini(articles)
+    digest = summarize_with_gemini(articles, ctx)
     print("✅ Résumé généré")
 
+    # Envoi Telegram
     print("\n📨 Envoi sur Telegram...")
     success = send_telegram(digest, os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"])
 
     if success:
-        print(f"✅ Digest {ctx['label']} envoyé avec succès !")
+        save_last_run_time()
+        print(f"\n🎉 Digest {ctx['label']} envoyé avec succès !")
     else:
-        print("❌ Échec de l'envoi Telegram")
+        print("\n❌ Échec de l'envoi Telegram")
         raise RuntimeError("Telegram send failed")
 
 
