@@ -1,12 +1,15 @@
 """
 News Digest Bot — 6h & 21h WAT
-Formatage HTML fait en Python (pas par Gemini)
-Gemini génère uniquement du JSON structuré
+- 1 seule requête Gemini par digest (quota free tier = 20 req/jour)
+- Troncature dynamique selon nombre d'articles
+- Formatage HTML fait en Python
+- Timestamp persistant via GitHub Cache
 """
 
 import os
 import re
 import json
+import time
 import feedparser
 import requests
 import google.generativeai as genai
@@ -60,7 +63,6 @@ RSS_SOURCES = {
         "https://mistral.ai/news/feed/",
         "https://techcrunch.com/category/artificial-intelligence/feed/",
         "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml",
-        "https://feeds.feedburner.com/blogspot/gJZg",
     ],
     "⚽ Foot International": [
         "https://www.bbc.com/sport/football/rss.xml",
@@ -90,7 +92,7 @@ RSS_SOURCES = {
 
 
 # ─────────────────────────────────────────────
-# TIMESTAMP DERNIÈRE EXÉCUTION
+# TIMESTAMP
 # ─────────────────────────────────────────────
 def get_last_run_time() -> datetime:
     try:
@@ -162,10 +164,10 @@ def fetch_articles(sources: dict, since: datetime) -> dict:
                     if published and published <= since:
                         continue
                     raw = entry.get("summary", entry.get("description", ""))
-                    clean = re.sub(r"<[^>]+>", "", raw).strip()[:400]
+                    clean = re.sub(r"<[^>]+>", "", raw).strip()
                     articles.append({
                         "title": entry.get("title", "Sans titre").strip(),
-                        "summary": clean,
+                        "summary": clean[:400],
                         "link": entry.get("link", "").strip(),
                         "source": feed.feed.get("title", "").strip(),
                         "published": published.astimezone(TZ_WAT).strftime("%H:%M") if published else "—",
@@ -186,104 +188,134 @@ def fetch_articles(sources: dict, since: datetime) -> dict:
 
 
 # ─────────────────────────────────────────────
-# GEMINI — GÉNÈRE UNIQUEMENT DU JSON
+# GEMINI — 1 SEULE REQUÊTE, BUDGET DYNAMIQUE
 # ─────────────────────────────────────────────
-def call_gemini_for_category(model, category: str, articles: list) -> dict:
-    """Appelle Gemini pour UNE seule catégorie."""
-    content = ""
-    for i, a in enumerate(articles):
-        content += f"[{i}] TITRE: {a['title']}\n"
-        content += f"    LIEN: {a['link']}\n"
-        content += f"    HEURE: {a['published']}\n"
-        if a["summary"]:
-            content += f"    RESUME: {a['summary'][:200]}\n"
+def build_prompt(content: str) -> str:
+    """Prompt commun pour Gemini et Groq."""
+    return f"""Tu es un assistant d'actualite expert. Analyse ces articles et retourne UNIQUEMENT un JSON valide, sans aucun texte avant ou apres.
 
-    extra = ""
-    if "IA" in category or "Mod" in category:
-        extra = "\nPrioritise : modèles gratuits, nouvelles offres, mises à jour, innovations."
-
-    prompt = f"""Tu es un assistant d'actualité. Analyse ces articles de la catégorie "{category}" et retourne UNIQUEMENT un JSON valide.{extra}
+Pour la section "IA et Modeles" : mets en avant les modeles gratuits, nouvelles offres, mises a jour et innovations IA.
 
 ARTICLES :
 {content}
 
-RETOURNE CE JSON EXACT (rien d'autre, zéro texte avant/après, zéro markdown) :
+FORMAT JSON ATTENDU :
 {{
-  "categorie": "{category}",
-  "items": [
+  "sections": [
     {{
-      "tag": "MotCléCourt",
-      "texte": "1-2 phrases avec contexte et faits clés.",
-      "lien": "https://url-complete-article.com/page"
+      "categorie": "Cameroun",
+      "items": [
+        {{
+          "tag": "Justice",
+          "texte": "1-2 phrases avec contexte et faits cles.",
+          "lien": "https://url-directe-article.com/page"
+        }}
+      ]
     }}
   ]
 }}
 
-RÈGLES STRICTES :
-- Inclure TOUS les articles disponibles
-- "lien" = URL COMPLÈTE de l'article (jamais une homepage)
-- "tag" = mot-clé court (Politique, Mercato, IA, Mondial, Justice...)
-- Répondre UNIQUEMENT avec le JSON brut, sans explication"""
+REGLES ABSOLUES :
+1. Inclure TOUTES les categories disponibles dans cet ordre : Cameroun, Afrique, Monde, Tech et Dev, IA et Modeles, Foot International, Ligues Europeennes, Foot Camerounais
+2. Inclure LE MAXIMUM d'items par categorie (tous les articles si possible)
+3. "lien" = URL COMPLETE et DIRECTE de l'article (jamais une homepage)
+4. "tag" = mot-cle court (Politique, Mercato, IA, Mondial, Justice, Transfert...)
+5. JSON pur uniquement - zero markdown, zero explication, zero texte hors JSON"""
 
-    response = model.generate_content(
-        prompt,
-        generation_config={"max_output_tokens": 4000, "temperature": 0.1}
-    )
 
-    raw = response.text.strip()
+def parse_json_response(raw: str) -> dict:
+    """Nettoie et parse la reponse JSON d'un LLM."""
+    raw = raw.strip()
     raw = re.sub(r"^```json\s*", "", raw)
     raw = re.sub(r"^```\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     raw = raw.strip()
-
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as e:
-        print(f"  ⚠️  JSON invalide pour {category}: {e}")
-        return {"categorie": category, "items": []}
+    data = json.loads(raw)
+    total_items = sum(len(s.get("items", [])) for s in data.get("sections", []))
+    print(f"  OK {len(data.get('sections', []))} sections, {total_items} items generes")
+    return data
 
 
-def summarize_with_gemini(articles_by_category: dict, ctx: dict) -> dict:
-    """
-    Traite chaque catégorie séparément pour respecter le quota Gemini free tier.
-    Sleep de 15s entre chaque requête (max 5 req/min sur free tier).
-    """
-    import time
-
+def try_gemini(prompt: str) -> dict:
+    """Gemini 2.5 Flash-Lite (gratuit, 1500 req/jour)."""
+    print("  Tentative Gemini 2.5 Flash-Lite...")
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    response = model.generate_content(
+        prompt,
+        generation_config={"max_output_tokens": 8000, "temperature": 0.1}
+    )
+    return parse_json_response(response.text)
 
-    sections = []
-    categories = [(cat, arts) for cat, arts in articles_by_category.items() if arts]
-    total_cats = len(categories)
 
-    for idx, (category, articles) in enumerate(categories):
-        print(f"  🤖 [{idx+1}/{total_cats}] {category} ({len(articles)} articles)...")
-        try:
-            section = call_gemini_for_category(model, category, articles)
-            if section.get("items"):
-                sections.append(section)
-                print(f"    ✅ {len(section['items'])} items générés")
-            else:
-                print(f"    ⚠️  Aucun item retourné")
-        except Exception as e:
-            print(f"    ❌ Erreur : {e}")
+def try_gemma(prompt: str) -> dict:
+    """Fallback Gemma 4 E4B (open-source Google, meme cle API que Gemini)."""
+    print("  Fallback Gemma 4 E4B (open-source)...")
+    # Gemma 4 est accessible via la meme API Google AI Studio
+    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+    model = genai.GenerativeModel("gemma-4-e4b-it")
+    response = model.generate_content(
+        prompt,
+        generation_config={"max_output_tokens": 8000, "temperature": 0.1}
+    )
+    return parse_json_response(response.text)
 
-        if idx < total_cats - 1:
-            print(f"    ⏳ Pause 15s (quota free tier)...")
-            time.sleep(15)
 
-    return {"sections": sections}
+def summarize_with_ai(articles_by_category: dict, ctx: dict) -> dict:
+    """
+    Principal : Gemini 2.5 Flash-Lite (1500 req/jour gratuit).
+    Fallback automatique : Groq Llama 3.3 70B (14400 req/jour gratuit).
+    Budget tokens calcule dynamiquement selon nombre d'articles.
+    """
+    total = sum(len(arts) for arts in articles_by_category.values() if arts)
+    BUDGET_CONTENT = 55_000
+    chars_per_article = max(60, min(300, BUDGET_CONTENT // max(total, 1)))
+    print(f"  {total} articles — {chars_per_article} chars/article alloues")
+
+    content = ""
+    for category, articles in articles_by_category.items():
+        if not articles:
+            continue
+        content += f"\n=== {category} ===\n"
+        for a in articles:
+            line = f"- {a['title']}"
+            if a["link"]:
+                line += f" [{a['link']}]"
+            if a["summary"]:
+                line += f" | {a['summary'][:chars_per_article]}"
+            content += line + "\n"
+
+    print(f"  Contenu : {len(content)} caracteres")
+    prompt = build_prompt(content)
+
+    # 1. Essai Gemini
+    try:
+        return try_gemini(prompt)
+    except Exception as e:
+        err = str(e)
+        if "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
+            print("  Gemini quota depasse, bascule sur Gemma 4......")
+        else:
+            print(f"  Gemini erreur ({err[:80]}), bascule sur Gemma 4......")
+
+    # 2. Fallback Groq
+    if not os.environ.get("GEMINI_API_KEY"):
+        print("  GEMINI_API_KEY non defini")
+        return {"sections": []}
+    try:
+        return try_gemma(prompt)
+    except Exception as e:
+        print(f"  Gemma erreur : {e}")
+        return {"sections": []}
+
+
 
 
 # ─────────────────────────────────────────────
-# FORMATAGE HTML — FAIT EN PYTHON (pas Gemini)
+# FORMATAGE HTML (Python, pas Gemini)
 # ─────────────────────────────────────────────
 def format_html(data: dict, ctx: dict) -> str:
-    """Construit le message HTML Telegram à partir du JSON Gemini."""
     lines = []
-
-    # En-tête
     lines.append(f"{ctx['emoji']} <b>Digest {ctx['label']} — {ctx['now_str']}</b>")
     lines.append(f"<i>{ctx['intro']}</i>")
     lines.append("")
@@ -294,18 +326,17 @@ def format_html(data: dict, ctx: dict) -> str:
         if not items:
             continue
 
-        # Titre de section
         lines.append(f"<b>{cat}</b>")
-
         for item in items:
             tag = item.get("tag", "").strip()
             texte = item.get("texte", "").strip()
             lien = item.get("lien", "").strip()
 
-            # Nettoyer le texte (supprimer tout HTML résiduel que Gemini aurait mis)
+            # Nettoyer tout HTML résiduel dans le texte
             texte = re.sub(r"<[^>]+>", "", texte)
-            # Echapper les caractères HTML spéciaux dans le texte
             texte = texte.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            tag = re.sub(r"<[^>]+>", "", tag)
+            tag = tag.replace("&", "&amp;")
 
             if lien and lien.startswith("http"):
                 bullet = f'&#8226; <b>{tag}</b> : {texte} <a href="{lien}">Lire</a>'
@@ -314,7 +345,7 @@ def format_html(data: dict, ctx: dict) -> str:
 
             lines.append(bullet)
 
-        lines.append("")  # ligne vide entre sections
+        lines.append("")
 
     return "\n".join(lines)
 
@@ -325,7 +356,6 @@ def format_html(data: dict, ctx: dict) -> str:
 def send_telegram(text: str, bot_token: str, chat_id: str) -> bool:
     api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
-    # Découper proprement
     lines = text.split("\n")
     chunks = []
     current = ""
@@ -352,7 +382,6 @@ def send_telegram(text: str, bot_token: str, chat_id: str) -> bool:
             print(f"  ✅ Message {i+1}/{len(chunks)} OK")
         else:
             print(f"  ❌ Erreur {i+1}: {resp.text}")
-            # Retry sans HTML
             payload["parse_mode"] = ""
             resp2 = requests.post(api_url, json=payload, timeout=15)
             if not resp2.ok:
@@ -388,18 +417,16 @@ def main():
         save_last_run_time()
         return
 
-    print("\n🤖 Génération JSON avec Gemini 3.5 Flash...")
-    data = summarize_with_gemini(articles, ctx)
-    sections_count = len(data.get("sections", []))
-    print(f"✅ {sections_count} sections générées")
+    print(f"\n🤖 Génération du digest (1 requête Gemini)...")
+    data = summarize_with_ai(articles, ctx)
 
-    if sections_count == 0:
-        print("❌ JSON vide retourné par Gemini")
+    if not data.get("sections"):
+        print("❌ Aucune section générée")
         raise RuntimeError("Gemini returned empty JSON")
 
     print("\n🎨 Formatage HTML...")
     digest_html = format_html(data, ctx)
-    print(f"✅ {len(digest_html)} caractères générés")
+    print(f"✅ {len(digest_html)} caractères")
 
     print("\n📨 Envoi Telegram...")
     success = send_telegram(digest_html, os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"])
