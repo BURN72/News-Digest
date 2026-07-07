@@ -188,69 +188,49 @@ def fetch_articles(sources: dict, since: datetime) -> dict:
 # ─────────────────────────────────────────────
 # GEMINI — GÉNÈRE UNIQUEMENT DU JSON
 # ─────────────────────────────────────────────
-def summarize_with_gemini(articles_by_category: dict, ctx: dict) -> dict:
-    """
-    Gemini reçoit les articles bruts et retourne un JSON structuré.
-    Le formatage HTML est fait en Python, pas par Gemini.
-    """
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    model = genai.GenerativeModel("gemini-3.5-flash")
-
-    # Construire le contenu brut
+def call_gemini_for_category(model, category: str, articles: list) -> dict:
+    """Appelle Gemini pour UNE seule catégorie."""
     content = ""
-    for category, articles in articles_by_category.items():
-        if not articles:
-            continue
-        content += f"\n\n=== {category} ===\n"
-        for i, a in enumerate(articles):
-            content += f"[{i}] TITRE: {a['title']}\n"
-            content += f"    LIEN: {a['link']}\n"
-            content += f"    HEURE: {a['published']}\n"
-            if a["summary"]:
-                content += f"    RESUME: {a['summary'][:250]}\n"
+    for i, a in enumerate(articles):
+        content += f"[{i}] TITRE: {a['title']}\n"
+        content += f"    LIEN: {a['link']}\n"
+        content += f"    HEURE: {a['published']}\n"
+        if a["summary"]:
+            content += f"    RESUME: {a['summary'][:200]}\n"
 
-    prompt = f"""Tu es un assistant d'actualité. Analyse ces articles et retourne UNIQUEMENT un objet JSON valide.
+    extra = ""
+    if "IA" in category or "Mod" in category:
+        extra = "\nPrioritise : modèles gratuits, nouvelles offres, mises à jour, innovations."
+
+    prompt = f"""Tu es un assistant d'actualité. Analyse ces articles de la catégorie "{category}" et retourne UNIQUEMENT un JSON valide.{extra}
 
 ARTICLES :
 {content}
 
-RETOURNE CE JSON EXACT (rien d'autre, pas de texte avant ou après, pas de balises markdown) :
-
+RETOURNE CE JSON EXACT (rien d'autre, zéro texte avant/après, zéro markdown) :
 {{
-  "sections": [
+  "categorie": "{category}",
+  "items": [
     {{
-      "categorie": "🇨🇲 Cameroun",
-      "items": [
-        {{
-          "tag": "Justice",
-          "texte": "Résumé de 1-2 phrases avec contexte et faits clés.",
-          "lien": "https://url-complete-de-article.com/page"
-        }}
-      ]
+      "tag": "MotCléCourt",
+      "texte": "1-2 phrases avec contexte et faits clés.",
+      "lien": "https://url-complete-article.com/page"
     }}
   ]
 }}
 
-RÈGLES :
-- Inclure TOUTES les catégories qui ont des articles
-- Inclure LE MAXIMUM d'items par catégorie (tous les articles si possible)
-- Le champ "lien" doit être l'URL COMPLÈTE et DIRECTE de l'article (pas une homepage)
-- Le champ "tag" = mot-clé thématique court (ex: "Politique", "Mercato", "IA", "Mondial")
-- Le champ "texte" = 1-2 phrases claires avec contexte
-- Catégories à inclure si articles disponibles :
-  "🇨🇲 Cameroun", "🌍 Afrique", "🌐 Monde", "💻 Tech & Dev",
-  "🤖 IA & Modèles", "⚽ Foot International", "🏆 Ligues Européennes", "🦁 Foot Camerounais"
-- Pour "🤖 IA & Modèles" : mentionner les modèles gratuits, nouvelles offres, mises à jour
-- Répondre UNIQUEMENT avec le JSON, sans commentaire, sans markdown, sans explication"""
+RÈGLES STRICTES :
+- Inclure TOUS les articles disponibles
+- "lien" = URL COMPLÈTE de l'article (jamais une homepage)
+- "tag" = mot-clé court (Politique, Mercato, IA, Mondial, Justice...)
+- Répondre UNIQUEMENT avec le JSON brut, sans explication"""
 
     response = model.generate_content(
         prompt,
-        generation_config={"max_output_tokens": 8000, "temperature": 0.2}
+        generation_config={"max_output_tokens": 4000, "temperature": 0.1}
     )
 
     raw = response.text.strip()
-
-    # Nettoyer les éventuels backticks que Gemini ajouterait quand même
     raw = re.sub(r"^```json\s*", "", raw)
     raw = re.sub(r"^```\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
@@ -259,9 +239,41 @@ RÈGLES :
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:
-        print(f"❌ JSON invalide : {e}")
-        print(f"Réponse brute : {raw[:500]}")
-        return {"sections": []}
+        print(f"  ⚠️  JSON invalide pour {category}: {e}")
+        return {"categorie": category, "items": []}
+
+
+def summarize_with_gemini(articles_by_category: dict, ctx: dict) -> dict:
+    """
+    Traite chaque catégorie séparément pour respecter le quota Gemini free tier.
+    Sleep de 15s entre chaque requête (max 5 req/min sur free tier).
+    """
+    import time
+
+    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+    model = genai.GenerativeModel("gemini-2.0-flash")
+
+    sections = []
+    categories = [(cat, arts) for cat, arts in articles_by_category.items() if arts]
+    total_cats = len(categories)
+
+    for idx, (category, articles) in enumerate(categories):
+        print(f"  🤖 [{idx+1}/{total_cats}] {category} ({len(articles)} articles)...")
+        try:
+            section = call_gemini_for_category(model, category, articles)
+            if section.get("items"):
+                sections.append(section)
+                print(f"    ✅ {len(section['items'])} items générés")
+            else:
+                print(f"    ⚠️  Aucun item retourné")
+        except Exception as e:
+            print(f"    ❌ Erreur : {e}")
+
+        if idx < total_cats - 1:
+            print(f"    ⏳ Pause 15s (quota free tier)...")
+            time.sleep(15)
+
+    return {"sections": sections}
 
 
 # ─────────────────────────────────────────────
