@@ -190,37 +190,36 @@ def fetch_articles(sources: dict, since: datetime) -> dict:
 # ─────────────────────────────────────────────
 # GEMINI — 1 SEULE REQUÊTE, BUDGET DYNAMIQUE
 # ─────────────────────────────────────────────
-def build_prompt(content: str) -> str:
-    """Prompt commun pour Gemini et Groq."""
-    return f"""Tu es un assistant d'actualite expert. Analyse ces articles et retourne UNIQUEMENT un JSON valide, sans aucun texte avant ou apres.
+def build_prompt_for_batch(content: str, categories: list) -> str:
+    """Prompt pour un batch d'articles (sous-ensemble de catégories)."""
+    cats_str = ", ".join(categories)
+    return f"""Tu es un assistant d\'actualite expert. Analyse ces articles et retourne UNIQUEMENT un JSON valide.
 
-Pour la section "IA et Modeles" : mets en avant les modeles gratuits, nouvelles offres, mises a jour et innovations IA.
-
-ARTICLES :
+ARTICLES DU BATCH :
 {content}
 
-FORMAT JSON ATTENDU :
+FORMAT JSON (rien d\'autre — zero markdown, zero texte avant/apres) :
 {{
   "sections": [
     {{
-      "categorie": "Cameroun",
+      "categorie": "NOM_CATEGORIE",
       "items": [
         {{
-          "tag": "Justice",
-          "texte": "1-2 phrases avec contexte et faits cles.",
-          "lien": "https://url-directe-article.com/page"
+          "tag": "MotCle",
+          "texte": "1-2 phrases contexte + faits cles.",
+          "lien": "https://url-complete-article.com/page"
         }}
       ]
     }}
   ]
 }}
 
-REGLES ABSOLUES :
-1. Inclure TOUTES les categories disponibles dans cet ordre : Cameroun, Afrique, Monde, Tech et Dev, IA et Modeles, Foot International, Ligues Europeennes, Foot Camerounais
-2. Inclure LE MAXIMUM d'items par categorie (tous les articles si possible)
-3. "lien" = URL COMPLETE et DIRECTE de l'article (jamais une homepage)
-4. "tag" = mot-cle court (Politique, Mercato, IA, Mondial, Justice, Transfert...)
-5. JSON pur uniquement - zero markdown, zero explication, zero texte hors JSON"""
+REGLES :
+1. Traiter UNIQUEMENT les categories presentes dans ce batch : {cats_str}
+2. Inclure TOUS les articles de chaque categorie dans les items
+3. "lien" = URL COMPLETE de l\'article (jamais une homepage)
+4. "tag" = mot-cle court (Politique, Mercato, IA, Mondial, Justice...)
+5. JSON pur uniquement"""
 
 
 def parse_json_response(raw: str) -> dict:
@@ -232,15 +231,14 @@ def parse_json_response(raw: str) -> dict:
     raw = raw.strip()
     data = json.loads(raw)
     total_items = sum(len(s.get("items", [])) for s in data.get("sections", []))
-    print(f"  OK {len(data.get('sections', []))} sections, {total_items} items generes")
+    print(f"    -> {len(data.get('sections', []))} sections, {total_items} items")
     return data
 
 
-def try_gemini(prompt: str) -> dict:
-    """Gemini 2.5 Flash-Lite (gratuit, 1500 req/jour)."""
-    print("  Tentative Gemini 2.5 Flash-Lite...")
+def call_model(prompt: str, model_name: str) -> dict:
+    """Appelle un modèle Google AI (Gemini ou Gemma) avec la même clé."""
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    model = genai.GenerativeModel(model_name)
     response = model.generate_content(
         prompt,
         generation_config={"max_output_tokens": 8000, "temperature": 0.1}
@@ -248,65 +246,149 @@ def try_gemini(prompt: str) -> dict:
     return parse_json_response(response.text)
 
 
-def try_gemma(prompt: str) -> dict:
-    """Fallback Gemma 4 E4B (open-source Google, meme cle API que Gemini)."""
-    print("  Fallback Gemma 4 E4B (open-source)...")
-    # Gemma 4 est accessible via la meme API Google AI Studio
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    model = genai.GenerativeModel("gemma-4-e4b-it")
-    response = model.generate_content(
-        prompt,
-        generation_config={"max_output_tokens": 8000, "temperature": 0.1}
-    )
-    return parse_json_response(response.text)
+def call_with_fallback(prompt: str) -> dict:
+    """
+    Essai 1 : Gemini 2.5 Flash-Lite (1500 req/jour gratuit)
+    Fallback  : Gemma 4 E4B open-source (même clé API Google)
+    """
+    for model_name, label in [
+        ("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite"),
+        ("gemma-4-e4b-it",        "Gemma 4 E4B (fallback)"),
+    ]:
+        try:
+            print(f"    [{label}]...")
+            return call_model(prompt, model_name)
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
+                print(f"    Quota depasse sur {label}, essai suivant...")
+            else:
+                print(f"    Erreur {label}: {err[:100]}, essai suivant...")
+    return {"sections": []}
+
+
+def merge_sections(results: list) -> dict:
+    """
+    Fusionne les sections de plusieurs batches.
+    Si une catégorie apparaît dans plusieurs batches, on concatène les items.
+    """
+    merged = {}
+    for result in results:
+        for section in result.get("sections", []):
+            cat = section.get("categorie", "")
+            items = section.get("items", [])
+            if cat not in merged:
+                merged[cat] = []
+            merged[cat].extend(items)
+
+    # Reconstruire dans l'ordre défini
+    ORDER = [
+        "🇨🇲 Cameroun", "🌍 Afrique", "🌐 Monde", "💻 Tech & Dev",
+        "🤖 IA & Modèles", "⚽ Foot International",
+        "🏆 Ligues Européennes", "🦁 Foot Camerounais"
+    ]
+    sections = []
+    for cat in ORDER:
+        # Chercher la catégorie avec correspondance partielle (émojis)
+        items = None
+        for key in merged:
+            if any(c in key for c in cat.split()) or cat in key or key in cat:
+                items = merged[key]
+                break
+        if items:
+            sections.append({"categorie": cat, "items": items})
+
+    return {"sections": sections}
 
 
 def summarize_with_ai(articles_by_category: dict, ctx: dict) -> dict:
     """
-    Principal : Gemini 2.5 Flash-Lite (1500 req/jour gratuit).
-    Fallback automatique : Groq Llama 3.3 70B (14400 req/jour gratuit).
-    Budget tokens calcule dynamiquement selon nombre d'articles.
-    """
-    total = sum(len(arts) for arts in articles_by_category.values() if arts)
-    BUDGET_CONTENT = 55_000
-    chars_per_article = max(60, min(300, BUDGET_CONTENT // max(total, 1)))
-    print(f"  {total} articles — {chars_per_article} chars/article alloues")
+    Envoie TOUS les articles en plusieurs batches Gemini/Gemma.
+    Chaque batch = MAX_ARTICLES_PER_BATCH articles → output JSON safe.
+    Tous les résultats sont fusionnés avant envoi Telegram.
 
-    content = ""
+    Calcul dynamique :
+    - Output JSON estimé : ~60 tokens par article
+    - max_output_tokens = 8000 → max ~130 articles par batch
+    - On prend MAX_ARTICLES_PER_BATCH = 40 pour rester safe
+    """
+    MAX_ARTICLES_PER_BATCH = 40   # articles par requête Gemini
+    SUMMARY_LEN = 120             # chars de résumé par article
+
+    # Aplatir tous les articles par catégorie
+    total = sum(len(arts) for arts in articles_by_category.values() if arts)
+    print(f"  {total} articles au total")
+
+    # Calculer le nombre de batches nécessaires
+    import math
+    nb_batches = max(1, math.ceil(total / MAX_ARTICLES_PER_BATCH))
+    print(f"  -> {nb_batches} batch(es) de {MAX_ARTICLES_PER_BATCH} articles max")
+
+    # Distribuer les articles en batches en préservant les catégories
+    # On remplit chaque batch catégorie par catégorie
+    batches = []           # liste de dict {cat: [articles]}
+    current_batch = {}
+    current_count = 0
+
     for category, articles in articles_by_category.items():
         if not articles:
             continue
-        content += f"\n=== {category} ===\n"
-        for a in articles:
-            line = f"- {a['title']}"
-            if a["link"]:
-                line += f" [{a['link']}]"
-            if a["summary"]:
-                line += f" | {a['summary'][:chars_per_article]}"
-            content += line + "\n"
+        # Répartir les articles de cette catégorie entre les batches
+        idx = 0
+        while idx < len(articles):
+            if current_count >= MAX_ARTICLES_PER_BATCH:
+                batches.append(current_batch)
+                current_batch = {}
+                current_count = 0
+            # Combien peut-on mettre dans le batch courant ?
+            space = MAX_ARTICLES_PER_BATCH - current_count
+            chunk = articles[idx:idx + space]
+            if chunk:
+                if category not in current_batch:
+                    current_batch[category] = []
+                current_batch[category].extend(chunk)
+                current_count += len(chunk)
+            idx += space
 
-    print(f"  Contenu : {len(content)} caracteres")
-    prompt = build_prompt(content)
+    if current_batch:
+        batches.append(current_batch)
 
-    # 1. Essai Gemini
-    try:
-        return try_gemini(prompt)
-    except Exception as e:
-        err = str(e)
-        if "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
-            print("  Gemini quota depasse, bascule sur Gemma 4......")
-        else:
-            print(f"  Gemini erreur ({err[:80]}), bascule sur Gemma 4......")
+    print(f"  Distribution : {[sum(len(v) for v in b.values()) for b in batches]} articles/batch")
 
-    # 2. Fallback Groq
-    if not os.environ.get("GEMINI_API_KEY"):
-        print("  GEMINI_API_KEY non defini")
-        return {"sections": []}
-    try:
-        return try_gemma(prompt)
-    except Exception as e:
-        print(f"  Gemma erreur : {e}")
-        return {"sections": []}
+    # Traiter chaque batch
+    all_results = []
+    for i, batch in enumerate(batches):
+        cats_in_batch = list(batch.keys())
+        n_arts = sum(len(v) for v in batch.values())
+        print(f"\n  Batch {i+1}/{len(batches)} — {n_arts} articles ({', '.join(c.split()[0] for c in cats_in_batch)})")
+
+        # Construire le contenu du batch
+        content = ""
+        for cat, arts in batch.items():
+            content += f"\n=== {cat} ===\n"
+            for a in arts:
+                line = f"- {a['title']}"
+                if a["link"]:
+                    line += f" [{a['link']}]"
+                if a["summary"]:
+                    line += f" | {a['summary'][:SUMMARY_LEN]}"
+                content += line + "\n"
+
+        prompt = build_prompt_for_batch(content, cats_in_batch)
+        result = call_with_fallback(prompt)
+        all_results.append(result)
+
+        # Pause entre batches pour respecter le RPM (15 req/min)
+        if i < len(batches) - 1:
+            print(f"    Pause 5s entre batches...")
+            time.sleep(5)
+
+    # Fusionner tous les résultats
+    print(f"\n  Fusion de {len(all_results)} batch(es)...")
+    merged = merge_sections(all_results)
+    total_items = sum(len(s.get("items", [])) for s in merged.get("sections", []))
+    print(f"  Total final : {len(merged.get('sections', []))} sections, {total_items} items")
+    return merged
 
 
 
